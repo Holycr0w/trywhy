@@ -19,4 +19,4 @@ ENV NAME World
 
 
 # Run Streamlit when the container starts
-CMD ["streamlit", "run", "main.py"]
+CMD ["streamlit", "run", "OG.py"]
