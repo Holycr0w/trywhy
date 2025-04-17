@@ -1,0 +1,51 @@
+{
+  "name": "Technology Solution",
+  "description": "Proposal template for software and technology solutions",
+  "sections": [
+    {
+      "name": "Executive Summary",
+      "type": "executive_summary",
+      "required": true
+    },
+    {
+      "name": "Company Profile",
+      "type": "company_profile",
+      "required": true
+    },
+    {
+      "name": "Technical Solution",
+      "type": "technical",
+      "required": true
+    },
+    {
+      "name": "Implementation Approach",
+      "type": "methodology",
+      "required": true
+    },
+    {
+      "name": "Team & Expertise",
+      "type": "team",
+      "required": true
+    },
+    {
+      "name": "Similar Projects",
+      "type": "experience",
+      "required": true
+    },
+    {
+      "name": "Project Timeline",
+      "type": "timeline",
+      "required": true
+    },
+    {
+      "name": "Pricing Structure",
+      "type": "pricing",
+      "required": true
+    },
+    {
+      "name": "Technical Compliance",
+      "type": "compliance",
+      "required": false
+    }
+  ]
+}

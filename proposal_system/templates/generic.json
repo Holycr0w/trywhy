@@ -1,0 +1,41 @@
+{
+  "name": "Generic Proposal",
+  "description": "A general-purpose proposal template suitable for most industries",
+  "sections": [
+    {
+      "name": "Executive Summary",
+      "type": "executive_summary",
+      "required": true
+    },
+    {
+      "name": "About Us",
+      "type": "company_profile",
+      "required": true
+    },
+    {
+      "name": "Our Team",
+      "type": "team",
+      "required": false
+    },
+    {
+      "name": "Relevant Experience",
+      "type": "experience",
+      "required": true
+    },
+    {
+      "name": "Methodology",
+      "type": "methodology",
+      "required": true
+    },
+    {
+      "name": "Timeline",
+      "type": "timeline",
+      "required": true
+    },
+    {
+      "name": "Pricing",
+      "type": "pricing",
+      "required": true
+    }
+  ]
+}
