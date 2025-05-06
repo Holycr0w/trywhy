@@ -1,5 +1,4 @@
 import os
-from huggingface_hub import snapshot_download
 import json
 import re
 import glob
@@ -30,11 +29,6 @@ import plotly.express as px
 from collections import Counter
 import unicodedata # Import unicodedata for advanced cleaning
 
-
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id="sentence-transformers/all-MiniLM-L6-v2")
-
-MODEL_DIR = "local_models/sentence-transformers/all-MiniLM-L6-v2"
 # Helper function to remove problematic Unicode characters
 def remove_problematic_chars(text):
     """Removes characters that might cause encoding or display issues,
@@ -307,10 +301,10 @@ class HierarchicalEmbeddingModel:
 class ProposalKnowledgeBase:
     def __init__(self, kb_directory="markdown_responses", embedding_model="all-MiniLM-L6-v2"):
         self.kb_directory = kb_directory
-        self.embedding_model = embedding_model
-        self.model = None  # Initialize model as None
+        self.model = HierarchicalEmbeddingModel(embedding_model)
         self.documents = []
         self.section_map = {}
+        self.metadata = []
         self.index = None
         self.tfidf_vectorizer = TfidfVectorizer()
 
@@ -318,27 +312,6 @@ class ProposalKnowledgeBase:
             os.makedirs(kb_directory)
 
         self.load_documents()
-        self._build_index()
-
-    def load_model(self):
-        """Load the SentenceTransformer model with proper error handling"""
-        try:
-            # Try loading the model with automatic device detection
-            self.model = SentenceTransformer(self.embedding_model)
-            print(f"Successfully loaded model: {self.embedding_model}")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            # Fallback to CPU loading
-            print("Trying to load model on CPU...")
-            try:
-                self.model = SentenceTransformer(self.embedding_model, device='cpu')
-                print(f"Successfully loaded model on CPU: {self.embedding_model}")
-            except Exception as e:
-                print(f"Failed to load model even on CPU: {e}")
-                # Provide instructions for offline mode
-                print("Please ensure you have the model files downloaded locally or check your internet connection.")
-                print("For offline use, download the model files from Hugging Face and set the TRANSFORMERS_CACHE environment variable.")
-                self.model = None  # Mark model as unavailable
 
     def load_documents(self):
         """Load all documents from the knowledge base directory"""
@@ -352,10 +325,15 @@ class ProposalKnowledgeBase:
         for filename in os.listdir(self.kb_directory):
             if filename.endswith('.md') or filename.endswith('.txt'):
                 file_path = os.path.join(self.kb_directory, filename)
+                # Added errors='replace' here too for reading
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as file:
                     content = file.read()
 
-                sections = self._split_into_sections(content)
+                # Clean content immediately after reading
+                cleaned_content = remove_problematic_chars(content)
+
+                # Call the internal method using self
+                sections = self._split_into_sections(cleaned_content) # Use cleaned content
 
                 for section_name, section_content in sections.items():
                     doc_id = len(self.documents)
@@ -366,32 +344,31 @@ class ProposalKnowledgeBase:
                         "key_differentiators": ["quality", "experience"]
                     }
 
-                    # Extract metadata from filename
-                    if "_success_" in filename:
-                        metadata["proposal_success"] = filename.split("_success_")[1].split("_")[0] == "True"
-                    if "_industry_" in filename:
-                        metadata["client_industry"] = filename.split("_industry_")[1].split("_")[0]
-                    if "_size_" in filename:
-                        metadata["project_size"] = filename.split("_size_")[1].split("_")[0]
+                    # Apply cleaning to metadata strings if they come from filenames or external sources
+                    cleaned_filename = remove_problematic_chars(filename)
+                    if "_success_" in cleaned_filename:
+                        metadata["proposal_success"] = cleaned_filename.split("_success_")[1].split("_")[0] == "True"
+                    if "_industry_" in cleaned_filename:
+                        metadata["client_industry"] = remove_problematic_chars(cleaned_filename.split("_industry_")[1].split("_")[0])
+                    if "_size_" in cleaned_filename:
+                        metadata["project_size"] = remove_problematic_chars(cleaned_filename.split("_size_")[1].split("_")[0])
 
                     self.documents.append({
                         "id": doc_id,
-                        "filename": filename,
-                        "section_name": section_name,
-                        "content": section_content,
+                        "filename": cleaned_filename, # Store cleaned filename
+                        "section_name": remove_problematic_chars(section_name), # Store cleaned section name
+                        "content": remove_problematic_chars(section_content), # Store cleaned content
                         "metadata": metadata
                     })
 
-                    if section_name not in self.section_map:
-                        self.section_map[section_name] = []
-                    self.section_map[section_name].append(doc_id)
+                    # Use cleaned section name for mapping
+                    cleaned_section_name = remove_problematic_chars(section_name)
+                    if cleaned_section_name not in self.section_map:
+                        self.section_map[cleaned_section_name] = []
+                    self.section_map[cleaned_section_name].append(doc_id)
                     self.metadata.append(metadata)
 
-        # Load the model after documents are loaded
-        self.load_model()
-
-        if self.model is None:
-            print("Model could not be loaded. Knowledge Base functionality will be limited.")
+        self._build_index()
 
     # Moved this function inside the class
     def _split_into_sections(self, content):
@@ -468,10 +445,6 @@ class ProposalKnowledgeBase:
         return []
 
     def multi_hop_search(self, initial_query, k=5):
-        """Multi-hop retrieval process"""
-        if not self.index or not self.documents or not self.model:
-            print("Warning: Knowledge Base is not properly initialized for search.")
-            return []
         # Clean the initial query
         cleaned_initial_query = remove_problematic_chars(initial_query)
         first = self.hybrid_search(cleaned_initial_query, k=3*k)
@@ -609,11 +582,6 @@ class EnhancedProposalGenerator:
         self.client = OpenAI(api_key=openai_key or os.environ.get("OPENAI_API_KEY"))
         self.rfp_text = None  # Store RFP text for regeneration
         self.drafter = SpecialistRAGDrafter(openai_key)  # Specialist drafter
-
-        # Check if the knowledge base model is available
-        if not self.kb or not hasattr(self.kb, 'model') or self.kb.model is None:
-            print("Warning: Knowledge Base model is not initialized. Some features may not work.")
-    
 
     def analyze_rfp(self, rfp_text):
         """Comprehensive RFP analysis using the new prompt"""
