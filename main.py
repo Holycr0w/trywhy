@@ -29,25 +29,6 @@ import plotly.express as px
 from collections import Counter
 import unicodedata # Import unicodedata for advanced cleaning
 
-
-
-from sentence_transformers import SentenceTransformer
-import os
-
-model_name = "all-MiniLM-L6-v2" # Replace with your desired model name
-cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub") # Default cache location
-
-print(f"Attempting to download model: {model_name}")
-print(f"Model will be cached in: {cache_dir}")
-
-try:
-    # This line will download the model if it's not already in the cache
-    model = SentenceTransformer(model_name)
-    print(f"Model {model_name} downloaded and cached successfully!")
-except Exception as e:
-    print(f"Error during download: {e}")
-    print("Please check your internet connection or try again.")
-
 # Helper function to remove problematic Unicode characters
 def remove_problematic_chars(text):
     """Removes characters that might cause encoding or display issues,
@@ -291,23 +272,17 @@ def expand_query(query: str) -> str:
 class HierarchicalEmbeddingModel:
     """Model for hierarchical embeddings (document and section level)"""
     def __init__(self, model_name: str):
-    # --- CHANGE HERE ---
-    # Explicitly set the device. Use 'cuda' if you have a configured GPU,
-    # otherwise 'cpu' is safer.
+        # --- CHANGE HERE ---
+        # Explicitly set the device. Use 'cuda' if you have a configured GPU,
+        # otherwise 'cpu' is safer.
         try:
             # Try loading directly to CPU first, often resolves this.
-            self.model = SentenceTransformer(model_name, device='cpu', local_files_only=True) # Modified line
-            print(f"SentenceTransformer loaded on CPU for model: {model_name} (local files only)")
+            self.model = SentenceTransformer(model_name, device='cpu')
+            print(f"SentenceTransformer loaded on CPU for model: {model_name}")
         except Exception as e:
-            print(f"Error loading SentenceTransformer on CPU with local_files_only=True: {e}. Trying default loading.")
-            # Fallback logic - if you want the fallback to *also* be local-only:
-            try:
-                    self.model = SentenceTransformer(model_name, local_files_only=True) # Add here too
-                    print(f"SentenceTransformer loaded with local_files_only=True (default device)")
-            except Exception as fallback_e:
-                    print(f"Error loading SentenceTransformer even with fallback and local_files_only=True: {fallback_e}")
-                    # Depending on your strictness, you might want to raise an error or handle this failure.
-                    raise fallback_e # Re-raise if strictly local-only loading is mandatory
+            print(f"Error loading SentenceTransformer on CPU: {e}. Trying default loading.")
+            # Fallback to default loading if CPU fails (might retry meta issue)
+            self.model = SentenceTransformer(model_name)
 
     def encode(self, texts: List[str], level: str = 'section') -> np.ndarray:
         """Generate embeddings with different pooling strategies based on level"""
