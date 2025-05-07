@@ -29,8 +29,6 @@ import plotly.express as px
 from collections import Counter
 import unicodedata # Import unicodedata for advanced cleaning
 
-
-
 # Helper function to remove problematic Unicode characters
 def remove_problematic_chars(text):
     """Removes characters that might cause encoding or display issues,
@@ -274,23 +272,7 @@ def expand_query(query: str) -> str:
 class HierarchicalEmbeddingModel:
     """Model for hierarchical embeddings (document and section level)"""
     def __init__(self, model_name: str):
-    # --- CHANGE HERE ---
-    # Explicitly set the device. Use 'cuda' if you have a configured GPU,
-    # otherwise 'cpu' is safer.
-        try:
-            # Try loading directly to CPU first, often resolves this.
-            self.model = SentenceTransformer(model_name, device='cpu') # Modified line
-            print(f"SentenceTransformer loaded on CPU for model: {model_name} (local files only)")
-        except Exception as e:
-            print(f"Error loading SentenceTransformer on CPU with local_files_only=True: {e}. Trying default loading.")
-            # Fallback logic - if you want the fallback to *also* be local-only:
-            try:
-                    self.model = SentenceTransformer(model_name, local_files_only=True) # Add here too
-                    print(f"SentenceTransformer loaded with local_files_only=True (default device)")
-            except Exception as fallback_e:
-                    print(f"Error loading SentenceTransformer even with fallback and local_files_only=True: {fallback_e}")
-                    # Depending on your strictness, you might want to raise an error or handle this failure.
-                    raise fallback_e # Re-raise if strictly local-only loading is mandatory
+        self.model = SentenceTransformer(model_name)
 
     def encode(self, texts: List[str], level: str = 'section') -> np.ndarray:
         """Generate embeddings with different pooling strategies based on level"""
@@ -785,10 +767,8 @@ class EnhancedProposalGenerator:
     def generate_section(self, section_name, rfp_analysis, rfp_section_content,
                          client_background, differentiators,
                          evaluation_criteria, relevant_kb_content, client_name):
-        """Generate a proposal section with checks for KB availability for pricing."""
-
-        # Inputs are assumed to be cleaned by the calling function (generate_full_proposal)
-        # For safety, we can re-apply cleaning here if called directly elsewhere.
+        """Generate a proposal section with adjusted client specificity requirements"""
+        # Ensure all input text is cleaned before sending to LLM
         cleaned_section_name = remove_problematic_chars(section_name)
         cleaned_rfp_analysis = remove_problematic_chars(rfp_analysis)
         cleaned_rfp_section_content = remove_problematic_chars(rfp_section_content) if rfp_section_content else ""
@@ -797,55 +777,29 @@ class EnhancedProposalGenerator:
         cleaned_evaluation_criteria = remove_problematic_chars(evaluation_criteria) if evaluation_criteria else ""
         cleaned_client_name = remove_problematic_chars(client_name) if client_name else ""
 
-        # relevant_kb_content is a list of dicts; ensure content within is cleaned
-        cleaned_relevant_kb_content = []
-        for item in relevant_kb_content:
-            if isinstance(item, dict) and 'document' in item and isinstance(item['document'], dict):
-                 item['document']['filename'] = remove_problematic_chars(item['document'].get('filename', ''))
-                 item['document']['section_name'] = remove_problematic_chars(item['document'].get('section_name', ''))
-                 item['document']['content'] = remove_problematic_chars(item['document'].get('content', ''))
-                 cleaned_relevant_kb_content.append(item)
-            # else: skip malformed items
-
 
         is_pricing = any(term in cleaned_section_name.lower() for term in ["commercial", "pricing", "cost", "financial", "budget", "price"])
 
+        kb_items = "\n\n".join([
+            f"--- {('Very Relevant' if item['score']>0.8 else 'Relevant')} PAST PROPOSAL ---\n"
+            f"From: {remove_problematic_chars(item['document']['filename'])} | Section: {remove_problematic_chars(item['document']['section_name'])}\n"
+            f"{remove_problematic_chars(item['document']['content'])}"
+            for item in relevant_kb_content if item['score']>=0.5
+        ])[:2000]
+
         pricing_block = ""
         if is_pricing:
-            # --- ADDED CHECK for KB before accessing pricing ---
-            if not self.kb or not hasattr(self.kb, 'extract_pricing_from_kb'):
-                st.warning(f"Knowledge Base unavailable for pricing insights in section '{cleaned_section_name}'.")
-                pricing_block = "\n\n## PRICING INSIGHT\nKnowledge Base unavailable."
-                prices = [] # Define prices as empty list
+            prices = self.kb.extract_pricing_from_kb()
+            if prices:
+                avg = sum(prices) / len(prices)
+                pricing_block = (
+                    f"\n\n## PRICING INSIGHT\n"
+                    f"Based on {len(prices)} past proposals, prices ranged from ₹{min(prices):,} "
+                    f"to ₹{max(prices):,}, with an average of ₹{avg:,.0f}."
+                )
             else:
-                try:
-                    prices = self.kb.extract_pricing_from_kb() # Method returns list of ints
-                    if prices:
-                        avg = sum(prices) / len(prices)
-                        pricing_block = (
-                            f"\n\n## PRICING INSIGHT\n"
-                            f"Based on {len(prices)} past proposals, prices ranged from ₹{min(prices):,} "
-                            f"to ₹{max(prices):,}, with an average of ₹{avg:,.0f}."
-                        )
-                    else:
-                        pricing_block = "\n\n## PRICING INSIGHT\nNo past pricing data found in KB."
-                except Exception as e:
-                    st.error(f"Error extracting pricing from KB: {e}")
-                    pricing_block = "\n\n## PRICING INSIGHT\nError extracting pricing data from KB."
-                    prices = [] # Define prices as empty list on error
-            # --- END CHECK ---
-        else:
-             prices = [] # Ensure prices is defined if not a pricing section
+                pricing_block = "\n\n## PRICING INSIGHT\nNo past pricing data found in KB."
 
-        # Prepare KB items string from the cleaned list
-        kb_items = "\n\n".join([
-             f"--- {('Very Relevant' if item.get('score', 0)>0.8 else 'Relevant')} PAST PROPOSAL ---\n"
-             f"From: {item['document']['filename']} | Section: {item['document']['section_name']}\n"
-             f"{item['document']['content']}" # Content is already cleaned
-             for item in cleaned_relevant_kb_content if item.get('score', 0) >= 0.5
-        ])[:2000] # Limit length
-
-        # Ensure all parts of the prompt are cleaned strings
         prompt = f"""
         # STRATEGIC PROPOSAL SECTION GENERATION
 
@@ -864,29 +818,27 @@ class EnhancedProposalGenerator:
         {cleaned_differentiators}
 
         REFERENCE MATERIAL:
-        {remove_problematic_chars(kb_items)}
+        {kb_items}
 
         GENERATION INSTRUCTIONS:
-        1. Address RFP requirements for '{cleaned_section_name}'.
-        2. Use client-specific language and examples where possible, referring to '{cleaned_client_name}'.
-        3. Incorporate relevant details from REFERENCE MATERIAL without direct copying.
-        4. Highlight how our differentiators ({cleaned_differentiators}) meet the client's needs in this section.
-        5. Ensure professional tone and clear structure.
-        6. Only include explicit pricing details if this is a commercial/pricing section.
-        {remove_problematic_chars(pricing_block)}
+        1. Address RFP requirements;
+        2. Use client-specific examples;
+        4. Maintain professional tone;
+        5. Avoid sensitive direct copy;
+        6. Pricing only in commercial sections.
+        {pricing_block}
         """
         try:
             res = self.client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role":"system","content":"You are an expert proposal writer, tailoring content specifically for the client and RFP section."},
+                messages=[{"role":"system","content":"You are an expert proposal writer."},
                           {"role":"user","content":prompt}],
                 temperature=0.2
             )
-            # Clean the generated section content before returning
+            # Clean the generated section content
             return remove_problematic_chars(res.choices[0].message.content)
         except Exception as e:
-            st.error(f"Error generating section '{cleaned_section_name}' via LLM: {e}")
-            return f"Error generating section {cleaned_section_name}: {str(e)}" # Return cleaned error message
+            return f"Error generating section {cleaned_section_name}: {str(e)}"
 
     def validate_proposal_client_specificity(self, proposal_sections, client_name):
         """Validates that the proposal is sufficiently client-specific"""
@@ -1194,39 +1146,17 @@ class EnhancedProposalGenerator:
             return f"Error generating executive summary: {str(e)}"
 
     def generate_full_proposal(self, rfp_text, client_name=None, company_info=None, template_sections=None):
-        """Generate a full proposal with checks for KB initialization."""
-
-        # --- ADDED CHECK ---
-        # Check if the Knowledge Base is initialized and has the required methods
-        if not self.kb or not hasattr(self.kb, 'multi_hop_search') or not hasattr(self.kb, 'extract_pricing_from_kb'):
-            st.error("Knowledge Base is not properly initialized within the Proposal Generator. Cannot generate full proposal.")
-            # Return an error structure consistent with the expected output
-            return {
-                "analysis": "Error: Knowledge Base not initialized.",
-                "sections": {},
-                "client_background": "Client background not available due to KB error.",
-                "differentiators": company_info.get("differentiators", "") if company_info else "",
-                "required_sections": template_sections or [],
-                "client_name": remove_problematic_chars(client_name) if client_name else None
-            }
-        # --- END CHECK ---
-
+        """Generate a full proposal with adjusted client specificity requirements"""
         print("Analyzing RFP...")
         # Clean RFP text before analysis
         cleaned_rfp_text = remove_problematic_chars(rfp_text)
-        rfp_analysis = self.analyze_rfp(cleaned_rfp_text) # Analysis result is cleaned by the method
+        rfp_analysis = self.analyze_rfp(cleaned_rfp_text)
 
         if template_sections:
             # Ensure template sections are cleaned
             required_sections = [remove_problematic_chars(s) for s in template_sections]
         else:
-            # extract_required_sections uses cleaned analysis and returns cleaned sections
             required_sections = self.extract_required_sections(rfp_analysis)
-            if not required_sections: # Fallback if LLM fails extraction or returns empty
-                rfp_doc_sections = extract_sections_from_rfp(cleaned_rfp_text)
-                required_sections = [remove_problematic_chars(s) for s in rfp_doc_sections.keys()] if rfp_doc_sections else ["Introduction", "Proposed Solution", "Pricing", "Conclusion"]
-                st.warning(f"Could not extract specific required sections from RFP Analysis. Using sections: {', '.join(required_sections)}")
-
 
         # Clean client name and company info before research/use
         cleaned_client_name = remove_problematic_chars(client_name) if client_name else None
@@ -1237,7 +1167,6 @@ class EnhancedProposalGenerator:
 
 
         if cleaned_client_name:
-            # research_client_background returns cleaned background
             client_background = self.research_client_background(cleaned_client_name)
         else:
             client_background = "Client background not provided."
@@ -1247,88 +1176,79 @@ class EnhancedProposalGenerator:
 
         criteria_pattern = r"EVALUATION CRITERIA(.*?)CLIENT PAIN POINTS"
         # Use cleaned rfp_analysis for pattern matching
-        evaluation_criteria_match = re.search(criteria_pattern, rfp_analysis, re.DOTALL)
-        # evaluation_criteria is cleaned after extraction
-        evaluation_criteria = remove_problematic_chars(evaluation_criteria_match.group(1).strip()) if evaluation_criteria_match else "Evaluation criteria not specified."
+        evaluation_criteria = re.search(criteria_pattern, rfp_analysis, re.DOTALL)
+        evaluation_criteria = remove_problematic_chars(evaluation_criteria.group(1).strip()) if evaluation_criteria else "Evaluation criteria not specified."
 
         proposal_sections = {}
-        # Extract sections from the cleaned RFP text once before the loop
-        rfp_sections_content_map = extract_sections_from_rfp(cleaned_rfp_text)
-
-        for section_name in required_sections: # required_sections are already cleaned
+        for section_name in required_sections:
             print(f"Generating section: {section_name}")
 
-            # Find corresponding RFP section content (case-insensitive matching)
-            rfp_section_content_for_llm = next((content for rfp_sec_name, content in rfp_sections_content_map.items() if section_name.lower() in rfp_sec_name.lower() or rfp_sec_name.lower() in section_name.lower()), "")
-            # Content is already cleaned by extract_sections_from_rfp
+            # Use cleaned rfp_text for section extraction
+            rfp_sections = extract_sections_from_rfp(cleaned_rfp_text)
+            rfp_section_content = None
+            for rfp_section in rfp_sections:
+                # Match cleaned section names
+                if section_name.lower() in rfp_section.lower() or rfp_section.lower() in section_name.lower():
+                    rfp_section_content = rfp_sections[rfp_section]
+                    break
 
-            cleaned_rfp_section_content = remove_problematic_chars(rfp_section_content_for_llm) if rfp_section_content_for_llm else ""
+            # Clean content before expanding query
+            cleaned_rfp_section_content = remove_problematic_chars(rfp_section_content) if rfp_section_content else ""
             expanded_query = expand_query(section_name + " " + cleaned_rfp_section_content)
+            relevant_kb_content = self.kb.multi_hop_search(expanded_query, k=3)
 
-            # --- ADDED TRY-EXCEPT around KB search ---
-            relevant_kb_content = [] # Default to empty list
-            try:
-                # Assuming self.kb was validated at the start of the method
-                relevant_kb_content = self.kb.multi_hop_search(expanded_query, k=3) # multi_hop_search returns cleaned content
-            except Exception as kb_error:
-                st.error(f"Error searching Knowledge Base for section '{section_name}': {kb_error}")
-                # Continue generation with empty KB content
-            # --- END TRY-EXCEPT ---
-
-            # Call generate_section (which now also has KB checks for pricing)
-            # All inputs passed here should be cleaned versions
             proposal_sections[section_name] = self.generate_section(
-                section_name,           # Cleaned
-                rfp_analysis,           # Cleaned
-                cleaned_rfp_section_content, # Cleaned
-                client_background,      # Cleaned
-                differentiators,        # Cleaned
-                evaluation_criteria,    # Cleaned
-                relevant_kb_content,    # Contains cleaned content
-                cleaned_client_name     # Cleaned
+                section_name,
+                rfp_analysis, # rfp_analysis is already cleaned
+                cleaned_rfp_section_content, # Use cleaned section content
+                client_background, # client_background is already cleaned
+                differentiators, # differentiators is already cleaned
+                evaluation_criteria, # evaluation_criteria is already cleaned
+                relevant_kb_content, # Content within relevant_kb_content is cleaned by hybrid_search
+                cleaned_client_name # Use cleaned client name
             )
 
         # Generate Executive Summary if needed
-        # Check against cleaned section names in the generated proposal_sections dictionary
         if "Executive Summary" not in proposal_sections and cleaned_client_name:
             print("Generating Executive Summary...")
 
             section_highlights = ""
-            key_sections_for_summary = ["Approach", "Methodology", "Solution", "Benefits", "Implementation"]
-            for summary_key_sec in key_sections_for_summary:
-                # Match cleaned section names from the generated proposal
-                matching_gen_section = next((s_name for s_name in proposal_sections.keys() if summary_key_sec.lower() in s_name.lower()), None)
-                if matching_gen_section:
+            key_sections = ["Approach", "Methodology", "Solution", "Benefits", "Implementation"]
+            for section in key_sections:
+                # Match cleaned section names
+                matching_section = next((s for s in proposal_sections.keys() if section.lower() in s.lower()), None)
+                if matching_section:
                     # Use cleaned proposal section content for highlights
-                    content_preview = remove_problematic_chars(proposal_sections[matching_gen_section])[:200] + "..."
-                    section_highlights += f"## {matching_gen_section} Preview\n{content_preview}\n\n"
+                    content_preview = remove_problematic_chars(proposal_sections[matching_section])[:200] + "..."
+                    section_highlights += f"## {matching_section} Preview\n{content_preview}\n\n"
 
-            # Ensure section_highlights is cleaned (though composed from cleaned parts)
-            cleaned_section_highlights = remove_problematic_chars(section_highlights)
-
-            # Generate the executive summary using cleaned inputs
             try:
-                # generate_executive_summary handles cleaning internally now
-                exec_summary_content = self.generate_executive_summary(
-                     client_background,     # Cleaned
-                     rfp_analysis,          # Cleaned
-                     differentiators,       # Cleaned
-                     cleaned_section_highlights, # Cleaned overview
-                     cleaned_client_name    # Cleaned
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are an expert proposal writer specializing in executive summaries."},
+                        {"role": "user", "content": f"""
+                        Create a concise executive summary for the proposal to {cleaned_client_name}.
+                        Highlight key differentiators and solution overview.
+                        Keep it to approximately 500 words.
+                        """}
+                    ],
+                    temperature=0.4
                 )
-                proposal_sections["Executive Summary"] = exec_summary_content # Result is cleaned by generate_executive_summary
+                # Clean the generated executive summary
+                proposal_sections["Executive Summary"] = remove_problematic_chars(response.choices[0].message.content)
             except Exception as e:
-                 print(f"Error generating Executive Summary: {str(e)}")
-                 proposal_sections["Executive Summary"] = "Error generating Executive Summary." # Add placeholder on error
+                print(f"Error generating Executive Summary: {str(e)}")
+                proposal_sections["Executive Summary"] = "Error generating Executive Summary." # Add placeholder on error
 
-        # Final structure uses cleaned data
+
         return {
-            "analysis": rfp_analysis,
-            "sections": proposal_sections,
-            "client_background": client_background,
-            "differentiators": differentiators,
-            "required_sections": required_sections,
-            "client_name": cleaned_client_name
+            "analysis": rfp_analysis, # Already cleaned
+            "sections": proposal_sections, # Content within sections is cleaned
+            "client_background": client_background, # Already cleaned
+            "differentiators": differentiators, # Already cleaned
+            "required_sections": required_sections, # Already cleaned
+            "client_name": cleaned_client_name # Store cleaned client_name
         }
 
 
